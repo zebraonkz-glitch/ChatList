@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -21,19 +22,113 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 import network
-from models import ChatService, Model
+from models import ChatService, HistoryResult, Model
 
 
 MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
+RESULT_ROW_HEIGHT = 150
+HISTORY_RESULT_ROW_HEIGHT = 150
+
+
+class MarkdownViewDialog(QDialog):
+    def __init__(
+        self,
+        model_name: str,
+        markdown_text: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Ответ — {model_name}")
+        self.setMinimumSize(760, 560)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Модель: {model_name}"))
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.document().setDefaultStyleSheet(
+            "body { font-family: Segoe UI, sans-serif; font-size: 11pt; line-height: 1.5; }"
+            "pre { background-color: #f5f5f5; padding: 8px; border-radius: 4px; }"
+            "code { background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; }"
+            "h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; }"
+            "ul, ol { margin-left: 20px; }"
+            "blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 12px; color: #555; }"
+        )
+        browser.setMarkdown(markdown_text)
+        layout.addWidget(browser, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setText("Закрыть")
+        layout.addWidget(buttons)
+
+
+class HistoryResultRowWidget(QFrame):
+    def __init__(
+        self,
+        item: HistoryResult,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.item = item
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        meta_box = QVBoxLayout()
+        meta_box.addWidget(QLabel("Дата"))
+        date_label = QLabel(item.created_at)
+        date_label.setWordWrap(True)
+        date_label.setMinimumWidth(120)
+        date_label.setMaximumWidth(140)
+        meta_box.addWidget(date_label)
+
+        meta_box.addWidget(QLabel("Модель"))
+        model_label = QLabel(item.model_name)
+        model_label.setWordWrap(True)
+        model_label.setMinimumWidth(120)
+        model_label.setMaximumWidth(180)
+        meta_box.addWidget(model_label)
+        meta_box.addStretch()
+        layout.addLayout(meta_box)
+
+        content_box = QVBoxLayout()
+        prompt_preview = item.prompt_text.replace("\n", " ")
+        if len(prompt_preview) > 100:
+            prompt_preview = prompt_preview[:97] + "..."
+        content_box.addWidget(QLabel(f"Промт: {prompt_preview}"))
+        content_box.addWidget(QLabel("Ответ"))
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(item.response)
+        editor.setFixedHeight(HISTORY_RESULT_ROW_HEIGHT)
+        editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        content_box.addWidget(editor)
+        layout.addLayout(content_box, 1)
+
+        actions_box = QVBoxLayout()
+        open_btn = QPushButton("Открыть")
+        open_btn.clicked.connect(self.on_open)
+        actions_box.addWidget(open_btn)
+        actions_box.addStretch()
+        layout.addLayout(actions_box)
+
+    def on_open(self) -> None:
+        MarkdownViewDialog(self.item.model_name, self.item.response, self).exec()
 
 
 def _readonly_item(text: str) -> QTableWidgetItem:
@@ -584,15 +679,17 @@ class HistoryDialog(QDialog):
         results_widget = QWidget()
         results_layout = QVBoxLayout(results_widget)
         results_layout.addWidget(QLabel("Результаты:"))
-        self.results_table = QTableWidget(0, 4)
-        self.results_table.setHorizontalHeaderLabels(["Дата", "Модель", "Промт", "Ответ"])
-        self.results_table.setSortingEnabled(True)
-        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.results_table.setWordWrap(True)
-        results_layout.addWidget(self.results_table)
+
+        self.results_scroll = QScrollArea()
+        self.results_scroll.setWidgetResizable(True)
+        self.results_scroll.setFrameShape(QFrame.Shape.StyledPanel)
+        self.results_container = QWidget()
+        self.results_cards_layout = QVBoxLayout(self.results_container)
+        self.results_cards_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.results_cards_layout.setSpacing(8)
+        self.results_scroll.setWidget(self.results_container)
+        results_layout.addWidget(self.results_scroll)
+
         splitter.addWidget(results_widget)
 
         splitter.setSizes([360, 600])
@@ -605,6 +702,13 @@ class HistoryDialog(QDialog):
         self._selected_prompt_id: int | None = None
         self.refresh_prompts()
         self.refresh_results()
+
+    def _clear_results_cards(self) -> None:
+        while self.results_cards_layout.count():
+            item = self.results_cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     def refresh_prompts(self) -> None:
         search = self.prompt_search_edit.text().strip()
@@ -637,23 +741,19 @@ class HistoryDialog(QDialog):
 
     def refresh_results(self) -> None:
         search = self.search_edit.text().strip()
+        results = self.service.load_history_results(self._selected_prompt_id, search)
+        self._clear_results_cards()
 
-        def fill() -> None:
-            results = self.service.load_history_results(self._selected_prompt_id, search)
-            self.results_table.setRowCount(0)
-            for item in results:
-                row_index = self.results_table.rowCount()
-                self.results_table.insertRow(row_index)
-                prompt_preview = item.prompt_text.replace("\n", " ")
-                if len(prompt_preview) > 80:
-                    prompt_preview = prompt_preview[:77] + "..."
-                self.results_table.setItem(row_index, 0, _readonly_item(item.created_at))
-                self.results_table.setItem(row_index, 1, _readonly_item(item.model_name))
-                self.results_table.setItem(row_index, 2, _readonly_item(prompt_preview))
-                self.results_table.setItem(row_index, 3, _readonly_item(item.response))
-            self.results_table.resizeRowsToContents()
+        if not results:
+            placeholder = QLabel("Нет сохранённых результатов")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.results_cards_layout.addWidget(placeholder)
+            return
 
-        _fill_table(self.results_table, fill)
+        for item in results:
+            self.results_cards_layout.addWidget(
+                HistoryResultRowWidget(item, self.results_container),
+            )
 
     def on_delete_prompt(self) -> None:
         rows = self.prompts_table.selectionModel().selectedRows()

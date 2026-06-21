@@ -6,8 +6,6 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -18,7 +16,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -26,7 +23,7 @@ from PyQt6.QtWidgets import (
 
 import network
 from app_log import setup_logging
-from dialogs import HistoryDialog, ModelsDialog, SettingsDialog
+from dialogs import HistoryDialog, MarkdownViewDialog, ModelsDialog, SettingsDialog
 from export_utils import export_json, export_markdown
 from models import ChatService, TempResult
 
@@ -73,42 +70,6 @@ class FetchWorker(QThread):
 
 
 RESULT_ROW_HEIGHT = 150
-
-
-class MarkdownViewDialog(QDialog):
-    def __init__(
-        self,
-        model_name: str,
-        markdown_text: str,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(f"Ответ — {model_name}")
-        self.setMinimumSize(760, 560)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Модель: {model_name}"))
-
-        self.browser = QTextBrowser()
-        self.browser.setOpenExternalLinks(True)
-        self.browser.document().setDefaultStyleSheet(
-            "body { font-family: Segoe UI, sans-serif; font-size: 11pt; line-height: 1.5; }"
-            "pre { background-color: #f5f5f5; padding: 8px; border-radius: 4px; }"
-            "code { background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; }"
-            "h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; }"
-            "ul, ol { margin-left: 20px; }"
-            "blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 12px; color: #555; }"
-        )
-        self.browser.setMarkdown(markdown_text)
-        layout.addWidget(self.browser, 1)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
-        if close_button is not None:
-            close_button.setText("Закрыть")
-        layout.addWidget(buttons)
 
 
 class ResultRowWidget(QFrame):

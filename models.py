@@ -234,3 +234,38 @@ class ChatService:
         if self.current_prompt_id == prompt_id:
             self.current_prompt_id = None
             self.current_prompt_text = ""
+
+    def is_assistant_enabled(self) -> bool:
+        return db.get_setting("assistant_enabled", "1") == "1"
+
+    def get_assistant_system_prompt(self) -> str | None:
+        custom = (db.get_setting("assistant_system_prompt") or "").strip()
+        return custom or None
+
+    def get_assistant_model(self) -> Model | None:
+        if not self.is_assistant_enabled():
+            return None
+        model_id_raw = (db.get_setting("assistant_model_id") or "").strip()
+        if not model_id_raw:
+            return None
+        try:
+            model_id = int(model_id_raw)
+        except ValueError:
+            return None
+        return self.get_model(model_id)
+
+    def improve_current_prompt(self, text: str):
+        from prompt_assistant import improve_prompt
+
+        model = self.get_assistant_model()
+        if model is None:
+            raise ValueError(
+                "Модель ассистента не настроена. Откройте «Приложение → Настройки».",
+            )
+        return improve_prompt(
+            text,
+            model,
+            timeout=self.get_request_timeout(),
+            max_tokens=self.get_max_tokens(),
+            system_prompt=self.get_assistant_system_prompt(),
+        )

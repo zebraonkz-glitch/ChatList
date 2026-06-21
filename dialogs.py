@@ -7,12 +7,14 @@ import sqlite3
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -22,8 +24,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
@@ -34,6 +38,7 @@ from PyQt6.QtWidgets import (
 
 import network
 from models import ChatService, HistoryResult, Model
+from prompt_assistant import PromptSuggestion
 
 
 MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
@@ -568,6 +573,126 @@ class ModelsDialog(QDialog):
         self.refresh()
 
 
+class ImprovePromptWorker(QThread):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        service: ChatService,
+        prompt_text: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.service = service
+        self.prompt_text = prompt_text
+
+    def run(self) -> None:
+        try:
+            suggestion = self.service.improve_current_prompt(self.prompt_text)
+            self.finished.emit(suggestion.to_dict())
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class PromptAssistantDialog(QDialog):
+    ADAPTATION_LABELS = {
+        "code": "Для кода",
+        "analysis": "Для анализа",
+        "creative": "Для креатива",
+    }
+
+    def __init__(
+        self,
+        suggestion: PromptSuggestion,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.suggestion = suggestion
+        self._options: list[tuple[str, str]] = []
+        self.setWindowTitle("AI-ассистент — улучшение промта")
+        self.setMinimumSize(760, 620)
+
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Исходный промт:"))
+        original = QTextEdit()
+        original.setReadOnly(True)
+        original.setPlainText(suggestion.original)
+        original.setMaximumHeight(100)
+        layout.addWidget(original)
+
+        layout.addWidget(QLabel("Выберите вариант для подстановки:"))
+        self.option_group = QButtonGroup(self)
+        options_layout = QVBoxLayout()
+
+        self._add_option(options_layout, "improved", "Улучшенный", suggestion.improved, checked=True)
+        for index, alt in enumerate(suggestion.alternatives, start=1):
+            self._add_option(options_layout, f"alt_{index}", f"Альтернатива {index}", alt)
+        for key, label in self.ADAPTATION_LABELS.items():
+            text = suggestion.adaptations.get(key, "").strip()
+            if text:
+                self._add_option(options_layout, f"adapt_{key}", label, text)
+
+        options_box = QGroupBox()
+        options_box.setLayout(options_layout)
+        layout.addWidget(options_box)
+
+        preview_tabs = QTabWidget()
+        preview_tabs.addTab(self._make_preview(suggestion.improved), "Улучшенный")
+        for index, alt in enumerate(suggestion.alternatives, start=1):
+            preview_tabs.addTab(self._make_preview(alt), f"Альт. {index}")
+        adapt_widget = QWidget()
+        adapt_layout = QVBoxLayout(adapt_widget)
+        for key, label in self.ADAPTATION_LABELS.items():
+            text = suggestion.adaptations.get(key, "")
+            if text:
+                adapt_layout.addWidget(QLabel(label + ":"))
+                adapt_layout.addWidget(self._make_preview(text, height=80))
+        if adapt_layout.count() == 0:
+            adapt_layout.addWidget(QLabel("Адаптации не получены"))
+        preview_tabs.addTab(adapt_widget, "Адаптации")
+        layout.addWidget(preview_tabs, 1)
+
+        buttons = QDialogButtonBox()
+        apply_btn = buttons.addButton("Подставить в поле ввода", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_btn = buttons.addButton("Отмена", QDialogButtonBox.ButtonRole.RejectRole)
+        apply_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _make_preview(self, text: str, height: int = 120) -> QTextEdit:
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(text)
+        editor.setMinimumHeight(height)
+        return editor
+
+    def _add_option(
+        self,
+        layout: QVBoxLayout,
+        key: str,
+        title: str,
+        text: str,
+        *,
+        checked: bool = False,
+    ) -> None:
+        preview = text.replace("\n", " ")
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        radio = QRadioButton(f"{title}: {preview}")
+        radio.setChecked(checked)
+        self.option_group.addButton(radio)
+        layout.addWidget(radio)
+        self._options.append((radio, text))
+
+    def selected_text(self) -> str:
+        for radio, text in self._options:
+            if radio.isChecked():
+                return text
+        return self.suggestion.improved
+
+
 class SettingsDialog(QDialog):
     def __init__(self, service: ChatService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -586,6 +711,30 @@ class SettingsDialog(QDialog):
 
         self.db_path_edit = QLineEdit(settings.get("db_path", "chatlist.db"))
         layout.addRow("Путь к БД:", self.db_path_edit)
+
+        layout.addRow(QLabel("— AI-ассистент —"))
+
+        self.assistant_enabled = QCheckBox("Включить AI-ассистент")
+        self.assistant_enabled.setChecked(settings.get("assistant_enabled", "1") == "1")
+        layout.addRow("", self.assistant_enabled)
+
+        self.assistant_model_combo = QComboBox()
+        self.assistant_model_combo.addItem("— не выбрана —", None)
+        current_model_id = settings.get("assistant_model_id", "")
+        for model in self.service.load_all_models():
+            label = f"{model.name} ({model.model_type})"
+            self.assistant_model_combo.addItem(label, model.id)
+            if str(model.id) == str(current_model_id):
+                self.assistant_model_combo.setCurrentIndex(self.assistant_model_combo.count() - 1)
+        layout.addRow("Модель ассистента:", self.assistant_model_combo)
+
+        self.assistant_prompt_edit = QLineEdit(settings.get("assistant_system_prompt", ""))
+        self.assistant_prompt_edit.setPlaceholderText("Пусто — системный промт по умолчанию")
+        layout.addRow("Системный промт:", self.assistant_prompt_edit)
+
+        layout.addRow(
+            QLabel("Рекомендуется быстрая модель OpenRouter для улучшения промтов."),
+        )
 
         layout.addRow(
             QLabel("Изменение пути к БД вступит в силу после перезапуска программы."),
@@ -622,11 +771,15 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "ChatList", "Укажите путь к файлу базы данных.")
             return
 
+        model_id = self.assistant_model_combo.currentData()
         self.service.save_settings(
             {
                 "request_timeout": timeout,
                 "max_tokens": tokens,
                 "db_path": db_path,
+                "assistant_enabled": "1" if self.assistant_enabled.isChecked() else "0",
+                "assistant_model_id": "" if model_id is None else str(model_id),
+                "assistant_system_prompt": self.assistant_prompt_edit.text().strip(),
             },
         )
         self.accept()

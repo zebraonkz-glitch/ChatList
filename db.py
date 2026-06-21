@@ -13,6 +13,9 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "request_timeout": "30",
     "max_tokens": "2048",
     "db_path": "chatlist.db",
+    "assistant_model_id": "",
+    "assistant_enabled": "1",
+    "assistant_system_prompt": "",
 }
 
 _SCHEMA = """
@@ -90,6 +93,32 @@ def init_db(db_path: str | Path | None = None) -> None:
                 (key, value),
             )
         _seed_models_if_empty(conn)
+        _seed_assistant_model_default(conn)
+
+
+def _seed_assistant_model_default(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = 'assistant_model_id'",
+    ).fetchone()
+    if row and str(row["value"]).strip():
+        return
+    model_row = conn.execute(
+        """
+        SELECT id FROM models
+        WHERE model_type = 'openrouter'
+        ORDER BY id
+        LIMIT 1
+        """,
+    ).fetchone()
+    if model_row is None:
+        return
+    conn.execute(
+        """
+        INSERT INTO settings (key, value) VALUES ('assistant_model_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(model_row["id"]),),
+    )
 
 
 def _seed_models_if_empty(conn: sqlite3.Connection) -> None:

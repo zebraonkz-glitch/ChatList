@@ -24,9 +24,17 @@ from PyQt6.QtWidgets import (
 
 import network
 from app_log import setup_logging
-from dialogs import HistoryDialog, MarkdownViewDialog, ModelsDialog, SettingsDialog
+from dialogs import (
+    HistoryDialog,
+    ImprovePromptWorker,
+    MarkdownViewDialog,
+    ModelsDialog,
+    PromptAssistantDialog,
+    SettingsDialog,
+)
 from export_utils import export_json, export_markdown
 from models import ChatService, TempResult
+from prompt_assistant import PromptSuggestion
 
 logger = setup_logging()
 
@@ -137,6 +145,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.service = ChatService()
         self.worker: FetchWorker | None = None
+        self.improve_worker: ImprovePromptWorker | None = None
         self._loading = False
 
         self.setWindowTitle("ChatList")
@@ -164,6 +173,11 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self.on_send)
         self.send_button.setMinimumWidth(110)
         prompt_row.addWidget(self.send_button, alignment=Qt.AlignmentFlag.AlignTop)
+
+        self.improve_button = QPushButton("Улучшить промт")
+        self.improve_button.clicked.connect(self.on_improve)
+        self.improve_button.setMinimumWidth(130)
+        prompt_row.addWidget(self.improve_button, alignment=Qt.AlignmentFlag.AlignTop)
         top_layout.addLayout(prompt_row)
 
         top_layout.addWidget(QLabel("Сохранённые промты:"))
@@ -301,9 +315,57 @@ class MainWindow(QMainWindow):
         self._loading = loading
         self.progress.setVisible(loading)
         self.send_button.setEnabled(not loading)
+        self.improve_button.setEnabled(not loading)
         self.save_button.setEnabled(not loading and bool(self.service.temp_results))
         if message:
             self.status_label.setText(message)
+
+    def on_improve(self) -> None:
+        if self._loading:
+            return
+
+        if not self.service.is_assistant_enabled():
+            QMessageBox.information(
+                self,
+                "ChatList",
+                "AI-ассистент отключён. Включите его в «Приложение → Настройки».",
+            )
+            return
+
+        if self.service.get_assistant_model() is None:
+            QMessageBox.warning(
+                self,
+                "ChatList",
+                "Модель ассистента не настроена. Откройте «Приложение → Настройки» "
+                "и выберите модель OpenRouter.",
+            )
+            return
+
+        prompt_text = self.prompt_edit.toPlainText().strip()
+        if not prompt_text:
+            QMessageBox.warning(self, "ChatList", "Введите текст для улучшения.")
+            return
+
+        self.set_loading(True, "Улучшение промта...")
+        logger.info("Запрос ассистента | текст=%r", prompt_text[:100])
+
+        self.improve_worker = ImprovePromptWorker(self.service, prompt_text, self)
+        self.improve_worker.finished.connect(self.on_improve_finished)
+        self.improve_worker.failed.connect(self.on_improve_failed)
+        self.improve_worker.start()
+
+    def on_improve_finished(self, payload: dict) -> None:
+        self.set_loading(False, "Готово")
+        suggestion = PromptSuggestion.from_dict(payload)
+        dialog = PromptAssistantDialog(suggestion, self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.prompt_edit.setPlainText(dialog.selected_text())
+            self.status_label.setText("Промт обновлён ассистентом")
+            logger.info("Промт подставлен из ассистента")
+
+    def on_improve_failed(self, message: str) -> None:
+        self.set_loading(False, message)
+        QMessageBox.warning(self, "ChatList", message)
 
     def on_send(self) -> None:
         if self._loading:

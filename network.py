@@ -31,10 +31,14 @@ def get_api_key(api_id: str) -> str:
     return key
 
 
-def _build_payload(model: Model, prompt: str, max_tokens: int) -> dict:
+def _build_payload(
+    model: Model,
+    max_tokens: int,
+    messages: list[dict[str, str]],
+) -> dict:
     return {
         "model": model.name,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "max_tokens": max_tokens,
     }
 
@@ -59,16 +63,22 @@ def _extract_response(data: dict, model_type: str) -> str:
     raise NetworkError(f"Неподдерживаемый тип модели: {model_type}")
 
 
-def send_prompt(
+def send_chat(
     model: Model,
-    prompt: str,
+    messages: list[dict[str, str]],
     *,
     timeout: float = 30.0,
     max_tokens: int = 2048,
+    log_tag: str = "CHAT",
 ) -> str:
     api_key = get_api_key(model.api_id)
     headers = _build_headers(model, api_key)
-    payload = _build_payload(model, prompt, max_tokens)
+    payload = _build_payload(model, max_tokens, messages)
+    preview = ""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            preview = str(message.get("content", ""))[:100].replace("\n", " ")
+            break
 
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -76,14 +86,41 @@ def send_prompt(
             response.raise_for_status()
             data = response.json()
     except httpx.TimeoutException as exc:
+        logger.warning("%s FAIL | модель=%s | таймаут", log_tag, model.name)
         raise NetworkError(f"Таймаут запроса ({timeout} с)") from exc
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text.strip() or str(exc)
+        logger.warning("%s FAIL | модель=%s | HTTP %s", log_tag, model.name, exc.response.status_code)
         raise NetworkError(f"HTTP {exc.response.status_code}: {detail}") from exc
     except httpx.RequestError as exc:
+        logger.warning("%s FAIL | модель=%s | сеть: %s", log_tag, model.name, exc)
         raise NetworkError(f"Ошибка сети: {exc}") from exc
 
-    return _extract_response(data, model.model_type)
+    result = _extract_response(data, model.model_type)
+    logger.info(
+        "%s OK | модель=%s | промт=%r | длина ответа=%d",
+        log_tag,
+        model.name,
+        preview,
+        len(result),
+    )
+    return result
+
+
+def send_prompt(
+    model: Model,
+    prompt: str,
+    *,
+    timeout: float = 30.0,
+    max_tokens: int = 2048,
+) -> str:
+    return send_chat(
+        model,
+        [{"role": "user", "content": prompt}],
+        timeout=timeout,
+        max_tokens=max_tokens,
+        log_tag="REQUEST",
+    )
 
 
 def _send_one(

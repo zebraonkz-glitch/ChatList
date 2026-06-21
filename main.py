@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -146,28 +147,31 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
 
-        layout.addWidget(QLabel("Сохранённые промты:"))
-        self.prompt_combo = QComboBox()
-        self.prompt_combo.currentIndexChanged.connect(self.on_prompt_selected)
-        layout.addWidget(self.prompt_combo)
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(QLabel("Промт:"))
+        top_layout.addWidget(QLabel("Промт:"))
+        prompt_row = QHBoxLayout()
         self.prompt_edit = QTextEdit()
         self.prompt_edit.setPlaceholderText("Введите запрос для нейросетей...")
         self.prompt_edit.setMinimumHeight(120)
-        layout.addWidget(self.prompt_edit)
+        prompt_row.addWidget(self.prompt_edit, 1)
 
-        buttons = QHBoxLayout()
         self.send_button = QPushButton("Отправить")
         self.send_button.clicked.connect(self.on_send)
-        buttons.addWidget(self.send_button)
+        self.send_button.setMinimumWidth(110)
+        prompt_row.addWidget(self.send_button, alignment=Qt.AlignmentFlag.AlignTop)
+        top_layout.addLayout(prompt_row)
 
-        self.save_button = QPushButton("Сохранить")
-        self.save_button.setEnabled(False)
-        self.save_button.clicked.connect(self.on_save)
-        buttons.addWidget(self.save_button)
+        top_layout.addWidget(QLabel("Сохранённые промты:"))
+        self.prompt_combo = QComboBox()
+        self.prompt_combo.currentIndexChanged.connect(self.on_prompt_selected)
+        top_layout.addWidget(self.prompt_combo)
 
+        buttons = QHBoxLayout()
         self.export_md_button = QPushButton("Экспорт MD")
         self.export_md_button.clicked.connect(self.on_export_markdown)
         buttons.addWidget(self.export_md_button)
@@ -181,17 +185,21 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.refresh_button)
 
         buttons.addStretch()
-        layout.addLayout(buttons)
+        top_layout.addLayout(buttons)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        top_layout.addWidget(self.progress)
 
         self.status_label = QLabel("Готово")
-        layout.addWidget(self.status_label)
+        top_layout.addWidget(self.status_label)
 
-        layout.addWidget(QLabel("Результаты:"))
+        results_widget = QWidget()
+        results_layout = QVBoxLayout(results_widget)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+
+        results_layout.addWidget(QLabel("Результаты:"))
 
         results_filter = QHBoxLayout()
         results_filter.addWidget(QLabel("Поиск:"))
@@ -206,7 +214,7 @@ class MainWindow(QMainWindow):
         self.results_sort.currentIndexChanged.connect(self.populate_results)
         results_filter.addWidget(self.results_sort)
         results_filter.addStretch()
-        layout.addLayout(results_filter)
+        results_layout.addLayout(results_filter)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
@@ -216,7 +224,20 @@ class MainWindow(QMainWindow):
         self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.results_layout.setSpacing(8)
         self.results_scroll.setWidget(self.results_container)
-        layout.addWidget(self.results_scroll, 1)
+        results_layout.addWidget(self.results_scroll, 1)
+
+        self.save_button = QPushButton("Сохранить")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self.on_save)
+        results_layout.addWidget(self.save_button)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.addWidget(top_widget)
+        self.main_splitter.addWidget(results_widget)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 7)
+        self.main_splitter.setSizes([240, 560])
+        layout.addWidget(self.main_splitter, 1)
 
         self.refresh_prompts()
 

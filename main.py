@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 import network
 from app_log import setup_logging
 from dialogs import (
+    AboutDialog,
     HistoryDialog,
     ImprovePromptWorker,
     MarkdownViewDialog,
@@ -35,6 +36,7 @@ from dialogs import (
 from export_utils import export_json, export_markdown
 from models import ChatService, TempResult
 from prompt_assistant import PromptSuggestion
+from ui_theme import apply_appearance
 
 logger = setup_logging()
 
@@ -147,6 +149,8 @@ class MainWindow(QMainWindow):
         self.worker: FetchWorker | None = None
         self.improve_worker: ImprovePromptWorker | None = None
         self._loading = False
+
+        apply_appearance(QApplication.instance(), self.service.get_settings())
 
         self.setWindowTitle("ChatList")
         self.setMinimumSize(900, 600)
@@ -275,6 +279,14 @@ class MainWindow(QMainWindow):
 
         export_json_action = app_menu.addAction("Экспорт JSON...")
         export_json_action.triggered.connect(self.on_export_json)
+
+        app_menu.addSeparator()
+
+        about_action = app_menu.addAction("О программе...")
+        about_action.triggered.connect(self.open_about)
+
+    def open_about(self) -> None:
+        AboutDialog(self).exec()
 
     def open_models(self) -> None:
         ModelsDialog(self.service, self).exec()

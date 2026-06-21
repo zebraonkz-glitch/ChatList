@@ -16,6 +16,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "assistant_model_id": "",
     "assistant_enabled": "1",
     "assistant_system_prompt": "",
+    "theme": "light",
+    "font_size": "10",
 }
 
 _SCHEMA = """

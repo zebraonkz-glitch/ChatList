@@ -7,6 +7,7 @@ import sqlite3
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -36,9 +37,22 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import db
 import network
 from models import ChatService, HistoryResult, Model
 from prompt_assistant import PromptSuggestion
+from ui_theme import (
+    APP_DESCRIPTION,
+    APP_NAME,
+    APP_VERSION,
+    FONT_SIZE_OPTIONS,
+    THEME_DARK,
+    THEME_LIGHT,
+    apply_appearance,
+    markdown_document_stylesheet,
+    parse_font_size,
+    parse_theme,
+)
 
 
 MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
@@ -63,12 +77,7 @@ class MarkdownViewDialog(QDialog):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)
         browser.document().setDefaultStyleSheet(
-            "body { font-family: Segoe UI, sans-serif; font-size: 11pt; line-height: 1.5; }"
-            "pre { background-color: #f5f5f5; padding: 8px; border-radius: 4px; }"
-            "code { background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; }"
-            "h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; }"
-            "ul, ol { margin-left: 20px; }"
-            "blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 12px; color: #555; }"
+            markdown_document_stylesheet(db.get_all_settings()),
         )
         browser.setMarkdown(markdown_text)
         layout.addWidget(browser, 1)
@@ -712,6 +721,26 @@ class SettingsDialog(QDialog):
         self.db_path_edit = QLineEdit(settings.get("db_path", "chatlist.db"))
         layout.addRow("Путь к БД:", self.db_path_edit)
 
+        layout.addRow(QLabel("— Оформление —"))
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Светлая", THEME_LIGHT)
+        self.theme_combo.addItem("Тёмная", THEME_DARK)
+        current_theme = parse_theme(settings.get("theme"))
+        theme_index = self.theme_combo.findData(current_theme)
+        if theme_index >= 0:
+            self.theme_combo.setCurrentIndex(theme_index)
+        layout.addRow("Тема:", self.theme_combo)
+
+        self.font_size_combo = QComboBox()
+        for size in FONT_SIZE_OPTIONS:
+            self.font_size_combo.addItem(f"{size} pt", size)
+        current_font_size = parse_font_size(settings.get("font_size"))
+        font_index = self.font_size_combo.findData(current_font_size)
+        if font_index >= 0:
+            self.font_size_combo.setCurrentIndex(font_index)
+        layout.addRow("Размер шрифта:", self.font_size_combo)
+
         layout.addRow(QLabel("— AI-ассистент —"))
 
         self.assistant_enabled = QCheckBox("Включить AI-ассистент")
@@ -772,17 +801,54 @@ class SettingsDialog(QDialog):
             return
 
         model_id = self.assistant_model_combo.currentData()
-        self.service.save_settings(
-            {
-                "request_timeout": timeout,
-                "max_tokens": tokens,
-                "db_path": db_path,
-                "assistant_enabled": "1" if self.assistant_enabled.isChecked() else "0",
-                "assistant_model_id": "" if model_id is None else str(model_id),
-                "assistant_system_prompt": self.assistant_prompt_edit.text().strip(),
-            },
-        )
+        saved = {
+            "request_timeout": timeout,
+            "max_tokens": tokens,
+            "db_path": db_path,
+            "theme": str(self.theme_combo.currentData()),
+            "font_size": str(self.font_size_combo.currentData()),
+            "assistant_enabled": "1" if self.assistant_enabled.isChecked() else "0",
+            "assistant_model_id": "" if model_id is None else str(model_id),
+            "assistant_system_prompt": self.assistant_prompt_edit.text().strip(),
+        }
+        self.service.save_settings(saved)
+        apply_appearance(QApplication.instance(), saved)
         self.accept()
+
+
+class AboutDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("О программе")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel(f"{APP_NAME} {APP_VERSION}")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 16pt; font-weight: bold;")
+        layout.addWidget(title)
+
+        description = QLabel(APP_DESCRIPTION)
+        description.setWordWrap(True)
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(description)
+
+        details = QLabel(
+            "Стек: Python 3.11+, PyQt6, SQLite, httpx\n"
+            "Отправка промтов в несколько моделей, сравнение ответов,\n"
+            "сохранение результатов, AI-ассистент, экспорт MD/JSON.",
+        )
+        details.setWordWrap(True)
+        details.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(details)
+
+        layout.addStretch()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Закрыть")
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class HistoryDialog(QDialog):

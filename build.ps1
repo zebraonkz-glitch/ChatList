@@ -1,9 +1,16 @@
 pip install -r requirements.txt pyinstaller
 
+if (-not (Test-Path "app.ico")) {
+    pip install -r requirements-dev.txt
+    python create_icon.py
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
 $buildArgs = @(
     "--onefile",
     "--windowed",
     "--name", "ChatList",
+    "--icon", "app.ico",
     "--hidden-import", "PyQt6.sip",
     "--collect-submodules", "PyQt6",
     "main.py"

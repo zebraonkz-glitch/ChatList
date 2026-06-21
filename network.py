@@ -8,9 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import httpx
 from dotenv import load_dotenv
 
+from app_log import setup_logging
 from models import Model, TempResult
 
 load_dotenv()
+logger = setup_logging()
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
@@ -90,6 +92,7 @@ def _send_one(
     timeout: float,
     max_tokens: int,
 ) -> TempResult:
+    preview = prompt[:100].replace("\n", " ")
     try:
         response = send_prompt(
             model,
@@ -97,10 +100,27 @@ def _send_one(
             timeout=timeout,
             max_tokens=max_tokens,
         )
+        logger.info(
+            "Запрос OK | модель=%s | промт=%r | длина ответа=%d",
+            model.name,
+            preview,
+            len(response),
+        )
     except NetworkError as exc:
         response = str(exc)
+        logger.warning(
+            "Запрос FAIL | модель=%s | промт=%r | ошибка=%s",
+            model.name,
+            preview,
+            exc,
+        )
     except Exception as exc:
         response = f"Ошибка: {exc}"
+        logger.exception(
+            "Запрос ERROR | модель=%s | промт=%r",
+            model.name,
+            preview,
+        )
     return TempResult(
         model_id=model.id,
         model_name=model.name,

@@ -42,6 +42,19 @@ def _readonly_item(text: str) -> QTableWidgetItem:
     return item
 
 
+def _readonly_numeric_item(value: int | str) -> QTableWidgetItem:
+    item = _readonly_item(str(value))
+    item.setData(Qt.ItemDataRole.UserRole, int(value))
+    return item
+
+
+def _fill_table(table: QTableWidget, fill_callback) -> None:
+    sorting = table.isSortingEnabled()
+    table.setSortingEnabled(False)
+    fill_callback()
+    table.setSortingEnabled(sorting)
+
+
 class ModelEditDialog(QDialog):
     def __init__(
         self,
@@ -296,10 +309,19 @@ class ModelsDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Имя, URL, тип...")
+        self.search_edit.textChanged.connect(self.refresh)
+        search_row.addWidget(self.search_edit)
+        layout.addLayout(search_row)
+
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
             ["ID", "Имя", "API URL", "Переменная .env", "Тип", "Активна"],
         )
+        self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -349,16 +371,26 @@ class ModelsDialog(QDialog):
             self.refresh()
 
     def refresh(self) -> None:
-        self.table.setRowCount(0)
-        for row_index, model in enumerate(self.service.load_all_models()):
-            self.table.insertRow(row_index)
-            self.table.setItem(row_index, 0, _readonly_item(str(model.id)))
-            self.table.setItem(row_index, 1, _readonly_item(model.name))
-            self.table.setItem(row_index, 2, _readonly_item(model.api_url))
-            self.table.setItem(row_index, 3, _readonly_item(model.api_id))
-            self.table.setItem(row_index, 4, _readonly_item(model.model_type))
-            self.table.setItem(row_index, 5, _readonly_item("Да" if model.is_active else "Нет"))
-            self.table.item(row_index, 0).setData(Qt.ItemDataRole.UserRole, model.id)
+        search = self.search_edit.text().strip().lower()
+
+        def fill() -> None:
+            self.table.setRowCount(0)
+            for model in self.service.load_all_models():
+                haystack = f"{model.name} {model.api_url} {model.api_id} {model.model_type}".lower()
+                if search and search not in haystack:
+                    continue
+                row_index = self.table.rowCount()
+                self.table.insertRow(row_index)
+                id_item = _readonly_numeric_item(model.id)
+                id_item.setData(Qt.ItemDataRole.UserRole, model.id)
+                self.table.setItem(row_index, 0, id_item)
+                self.table.setItem(row_index, 1, _readonly_item(model.name))
+                self.table.setItem(row_index, 2, _readonly_item(model.api_url))
+                self.table.setItem(row_index, 3, _readonly_item(model.api_id))
+                self.table.setItem(row_index, 4, _readonly_item(model.model_type))
+                self.table.setItem(row_index, 5, _readonly_item("Да" if model.is_active else "Нет"))
+
+        _fill_table(self.table, fill)
 
     def _selected_model_id(self) -> int | None:
         rows = self.table.selectionModel().selectedRows()
@@ -514,16 +546,18 @@ class HistoryDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        search_row = QHBoxLayout()
-        search_row.addWidget(QLabel("Поиск:"))
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Поиск промтов:"))
+        self.prompt_search_edit = QLineEdit()
+        self.prompt_search_edit.setPlaceholderText("Текст или теги...")
+        self.prompt_search_edit.textChanged.connect(self.refresh_prompts)
+        filter_row.addWidget(self.prompt_search_edit)
+        filter_row.addWidget(QLabel("Поиск результатов:"))
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Текст промта, модель или ответ...")
-        self.search_edit.returnPressed.connect(self.refresh_results)
-        search_row.addWidget(self.search_edit)
-        search_btn = QPushButton("Найти")
-        search_btn.clicked.connect(self.refresh_results)
-        search_row.addWidget(search_btn)
-        layout.addLayout(search_row)
+        self.search_edit.setPlaceholderText("Модель или ответ...")
+        self.search_edit.textChanged.connect(self.refresh_results)
+        filter_row.addWidget(self.search_edit)
+        layout.addLayout(filter_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -532,6 +566,7 @@ class HistoryDialog(QDialog):
         prompts_layout.addWidget(QLabel("Промты:"))
         self.prompts_table = QTableWidget(0, 4)
         self.prompts_table.setHorizontalHeaderLabels(["ID", "Дата", "Промт", "Теги"])
+        self.prompts_table.setSortingEnabled(True)
         self.prompts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.prompts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.prompts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -551,6 +586,7 @@ class HistoryDialog(QDialog):
         results_layout.addWidget(QLabel("Результаты:"))
         self.results_table = QTableWidget(0, 4)
         self.results_table.setHorizontalHeaderLabels(["Дата", "Модель", "Промт", "Ответ"])
+        self.results_table.setSortingEnabled(True)
         self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -571,17 +607,24 @@ class HistoryDialog(QDialog):
         self.refresh_results()
 
     def refresh_prompts(self) -> None:
-        self.prompts_table.setRowCount(0)
-        for row_index, prompt in enumerate(self.service.load_prompts()):
-            self.prompts_table.insertRow(row_index)
-            preview = prompt.text.replace("\n", " ")
-            if len(preview) > 60:
-                preview = preview[:57] + "..."
-            self.prompts_table.setItem(row_index, 0, _readonly_item(str(prompt.id)))
-            self.prompts_table.setItem(row_index, 1, _readonly_item(prompt.created_at))
-            self.prompts_table.setItem(row_index, 2, _readonly_item(preview))
-            self.prompts_table.setItem(row_index, 3, _readonly_item(prompt.tags))
-            self.prompts_table.item(row_index, 0).setData(Qt.ItemDataRole.UserRole, prompt.id)
+        search = self.prompt_search_edit.text().strip()
+
+        def fill() -> None:
+            self.prompts_table.setRowCount(0)
+            for prompt in self.service.load_prompts(search):
+                row_index = self.prompts_table.rowCount()
+                self.prompts_table.insertRow(row_index)
+                preview = prompt.text.replace("\n", " ")
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
+                id_item = _readonly_numeric_item(prompt.id)
+                id_item.setData(Qt.ItemDataRole.UserRole, prompt.id)
+                self.prompts_table.setItem(row_index, 0, id_item)
+                self.prompts_table.setItem(row_index, 1, _readonly_item(prompt.created_at))
+                self.prompts_table.setItem(row_index, 2, _readonly_item(preview))
+                self.prompts_table.setItem(row_index, 3, _readonly_item(prompt.tags))
+
+        _fill_table(self.prompts_table, fill)
 
     def on_prompt_selected(self) -> None:
         rows = self.prompts_table.selectionModel().selectedRows()
@@ -594,18 +637,23 @@ class HistoryDialog(QDialog):
 
     def refresh_results(self) -> None:
         search = self.search_edit.text().strip()
-        results = self.service.load_history_results(self._selected_prompt_id, search)
-        self.results_table.setRowCount(0)
-        for row_index, item in enumerate(results):
-            self.results_table.insertRow(row_index)
-            prompt_preview = item.prompt_text.replace("\n", " ")
-            if len(prompt_preview) > 80:
-                prompt_preview = prompt_preview[:77] + "..."
-            self.results_table.setItem(row_index, 0, _readonly_item(item.created_at))
-            self.results_table.setItem(row_index, 1, _readonly_item(item.model_name))
-            self.results_table.setItem(row_index, 2, _readonly_item(prompt_preview))
-            self.results_table.setItem(row_index, 3, _readonly_item(item.response))
-        self.results_table.resizeRowsToContents()
+
+        def fill() -> None:
+            results = self.service.load_history_results(self._selected_prompt_id, search)
+            self.results_table.setRowCount(0)
+            for item in results:
+                row_index = self.results_table.rowCount()
+                self.results_table.insertRow(row_index)
+                prompt_preview = item.prompt_text.replace("\n", " ")
+                if len(prompt_preview) > 80:
+                    prompt_preview = prompt_preview[:77] + "..."
+                self.results_table.setItem(row_index, 0, _readonly_item(item.created_at))
+                self.results_table.setItem(row_index, 1, _readonly_item(item.model_name))
+                self.results_table.setItem(row_index, 2, _readonly_item(prompt_preview))
+                self.results_table.setItem(row_index, 3, _readonly_item(item.response))
+            self.results_table.resizeRowsToContents()
+
+        _fill_table(self.results_table, fill)
 
     def on_delete_prompt(self) -> None:
         rows = self.prompts_table.selectionModel().selectedRows()

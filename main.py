@@ -1,27 +1,36 @@
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 import network
+from app_log import setup_logging
 from dialogs import HistoryDialog, ModelsDialog, SettingsDialog
+from export_utils import export_json, export_markdown
 from models import ChatService, TempResult
 
+logger = setup_logging()
 
 class FetchWorker(QThread):
     finished = pyqtSignal(list)
@@ -66,10 +75,46 @@ class FetchWorker(QThread):
 RESULT_ROW_HEIGHT = 150
 
 
+class MarkdownViewDialog(QDialog):
+    def __init__(
+        self,
+        model_name: str,
+        markdown_text: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Ответ — {model_name}")
+        self.setMinimumSize(760, 560)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Модель: {model_name}"))
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(True)
+        self.browser.document().setDefaultStyleSheet(
+            "body { font-family: Segoe UI, sans-serif; font-size: 11pt; line-height: 1.5; }"
+            "pre { background-color: #f5f5f5; padding: 8px; border-radius: 4px; }"
+            "code { background-color: #f0f0f0; padding: 2px 4px; border-radius: 3px; }"
+            "h1, h2, h3, h4 { margin-top: 16px; margin-bottom: 8px; }"
+            "ul, ol { margin-left: 20px; }"
+            "blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 12px; color: #555; }"
+        )
+        self.browser.setMarkdown(markdown_text)
+        layout.addWidget(self.browser, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        if close_button is not None:
+            close_button.setText("Закрыть")
+        layout.addWidget(buttons)
+
+
 class ResultRowWidget(QFrame):
     def __init__(
         self,
-        index: int,
+        model_id: int,
         model_name: str,
         response: str,
         selected: bool,
@@ -77,7 +122,9 @@ class ResultRowWidget(QFrame):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.index = index
+        self.model_id = model_id
+        self.model_name = model_name
+        self.response = response
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
         layout = QHBoxLayout(self)
@@ -108,11 +155,19 @@ class ResultRowWidget(QFrame):
         select_box.addWidget(QLabel("Выбрать"))
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(selected)
-        self.checkbox.toggled.connect(lambda checked: on_toggle(index, checked))
+        self.checkbox.toggled.connect(lambda checked: on_toggle(model_id, checked))
         select_box.addWidget(self.checkbox, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        open_btn = QPushButton("Открыть")
+        open_btn.clicked.connect(self.on_open)
+        select_box.addWidget(open_btn)
+
         select_box.addStretch()
         select_box.setContentsMargins(8, 0, 8, 0)
         layout.addLayout(select_box)
+
+    def on_open(self) -> None:
+        MarkdownViewDialog(self.model_name, self.response, self).exec()
 
 
 class MainWindow(QMainWindow):
@@ -152,6 +207,14 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self.on_save)
         buttons.addWidget(self.save_button)
 
+        self.export_md_button = QPushButton("Экспорт MD")
+        self.export_md_button.clicked.connect(self.on_export_markdown)
+        buttons.addWidget(self.export_md_button)
+
+        self.export_json_button = QPushButton("Экспорт JSON")
+        self.export_json_button.clicked.connect(self.on_export_json)
+        buttons.addWidget(self.export_json_button)
+
         self.refresh_button = QPushButton("Обновить промты")
         self.refresh_button.clicked.connect(self.refresh_prompts)
         buttons.addWidget(self.refresh_button)
@@ -168,6 +231,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_label)
 
         layout.addWidget(QLabel("Результаты:"))
+
+        results_filter = QHBoxLayout()
+        results_filter.addWidget(QLabel("Поиск:"))
+        self.results_search = QLineEdit()
+        self.results_search.setPlaceholderText("Модель или текст ответа...")
+        self.results_search.textChanged.connect(self.populate_results)
+        results_filter.addWidget(self.results_search)
+
+        results_filter.addWidget(QLabel("Сортировка:"))
+        self.results_sort = QComboBox()
+        self.results_sort.addItems(["Модель А→Я", "Модель Я→А"])
+        self.results_sort.currentIndexChanged.connect(self.populate_results)
+        results_filter.addWidget(self.results_sort)
+        results_filter.addStretch()
+        layout.addLayout(results_filter)
 
         self.results_scroll = QScrollArea()
         self.results_scroll.setWidgetResizable(True)
@@ -193,6 +271,14 @@ class MainWindow(QMainWindow):
 
         history_action = app_menu.addAction("История...")
         history_action.triggered.connect(self.open_history)
+
+        app_menu.addSeparator()
+
+        export_md_action = app_menu.addAction("Экспорт Markdown...")
+        export_md_action.triggered.connect(self.on_export_markdown)
+
+        export_json_action = app_menu.addAction("Экспорт JSON...")
+        export_json_action.triggered.connect(self.on_export_json)
 
     def open_models(self) -> None:
         ModelsDialog(self.service, self).exec()
@@ -255,6 +341,12 @@ class MainWindow(QMainWindow):
         self.service.clear_temp_results()
         self.populate_results()
         self.set_loading(True, "Отправка запросов...")
+        logger.info(
+            "Отправка промта | id=%s | моделей=%d | текст=%r",
+            self.service.current_prompt_id,
+            len(self.service.load_active_models()),
+            prompt_text[:100],
+        )
 
         self.worker = FetchWorker(self.service, prompt_text, self)
         self.worker.finished.connect(self.on_fetch_finished)
@@ -267,13 +359,29 @@ class MainWindow(QMainWindow):
         self.populate_results()
         self.set_loading(False, f"Получено ответов: {len(temp_results)}")
         self.save_button.setEnabled(bool(temp_results))
+        logger.info("Получено ответов: %d", len(temp_results))
 
     def on_fetch_failed(self, message: str) -> None:
         self.set_loading(False, message)
         QMessageBox.warning(self, "ChatList", message)
 
-    def on_result_toggled(self, index: int, selected: bool) -> None:
-        self.service.set_selected(index, selected)
+    def on_result_toggled(self, model_id: int, selected: bool) -> None:
+        for index, item in enumerate(self.service.temp_results):
+            if item.model_id == model_id:
+                self.service.set_selected(index, selected)
+                return
+
+    def _filtered_results(self) -> list[TempResult]:
+        items = list(self.service.temp_results)
+        search = self.results_search.text().strip().lower()
+        if search:
+            items = [
+                item
+                for item in items
+                if search in item.model_name.lower() or search in item.response.lower()
+            ]
+        reverse = self.results_sort.currentIndex() == 1
+        return sorted(items, key=lambda item: item.model_name.lower(), reverse=reverse)
 
     def _clear_results_layout(self) -> None:
         while self.results_layout.count():
@@ -284,15 +392,21 @@ class MainWindow(QMainWindow):
 
     def populate_results(self) -> None:
         self._clear_results_layout()
+        items = self._filtered_results()
         if not self.service.temp_results:
             placeholder = QLabel("Нет результатов")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.results_layout.addWidget(placeholder)
             return
+        if not items:
+            placeholder = QLabel("Ничего не найдено по фильтру")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.results_layout.addWidget(placeholder)
+            return
 
-        for index, item in enumerate(self.service.temp_results):
+        for item in items:
             row = ResultRowWidget(
-                index,
+                item.model_id,
                 item.model_name,
                 item.response,
                 item.selected,
@@ -300,6 +414,49 @@ class MainWindow(QMainWindow):
                 self.results_container,
             )
             self.results_layout.addWidget(row)
+
+    def _get_selected_for_export(self) -> list[TempResult]:
+        return self.service.get_selected_results()
+
+    def on_export_markdown(self) -> None:
+        selected = self._get_selected_for_export()
+        if not selected:
+            QMessageBox.information(self, "ChatList", "Отметьте хотя бы один результат для экспорта.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт Markdown",
+            "chatlist-export.md",
+            "Markdown (*.md);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        content = export_markdown(self.prompt_edit.toPlainText(), selected)
+        Path(path).write_text(content, encoding="utf-8")
+        logger.info("Экспорт Markdown | файл=%s | записей=%d", path, len(selected))
+        QMessageBox.information(self, "ChatList", f"Сохранено: {path}")
+
+    def on_export_json(self) -> None:
+        selected = self._get_selected_for_export()
+        if not selected:
+            QMessageBox.information(self, "ChatList", "Отметьте хотя бы один результат для экспорта.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт JSON",
+            "chatlist-export.json",
+            "JSON (*.json);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        content = export_json(
+            self.prompt_edit.toPlainText(),
+            selected,
+            prompt_id=self.service.current_prompt_id,
+        )
+        Path(path).write_text(content, encoding="utf-8")
+        logger.info("Экспорт JSON | файл=%s | записей=%d", path, len(selected))
+        QMessageBox.information(self, "ChatList", f"Сохранено: {path}")
 
     def on_save(self) -> None:
         try:
@@ -316,6 +473,7 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(False)
         self.status_label.setText(f"Сохранено результатов: {saved_count}")
         self.refresh_prompts()
+        logger.info("Сохранено в БД результатов: %d", saved_count)
         QMessageBox.information(self, "ChatList", f"Сохранено результатов: {saved_count}")
 
 

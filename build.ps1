@@ -11,6 +11,7 @@ $buildArgs = @(
     "--windowed",
     "--name", "ChatList",
     "--icon", "app.ico",
+    "--add-data", "app.ico;.",
     "--hidden-import", "PyQt6.sip",
     "--collect-submodules", "PyQt6",
     "main.py"

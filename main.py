@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 import network
 from app_log import setup_logging
+from app_resources import load_app_icon
 from dialogs import (
     AboutDialog,
     HistoryDialog,
@@ -151,6 +152,10 @@ class MainWindow(QMainWindow):
         self._loading = False
 
         apply_appearance(QApplication.instance(), self.service.get_settings())
+
+        icon = load_app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
 
         self.setWindowTitle("ChatList")
         self.setMinimumSize(900, 600)
@@ -535,6 +540,9 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication(sys.argv)
+    icon = load_app_icon()
+    if icon is not None:
+        app.setWindowIcon(icon)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

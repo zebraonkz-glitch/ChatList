@@ -1,0 +1,630 @@
+"""Диалоговые окна: модели, настройки, история."""
+
+from __future__ import annotations
+
+import sqlite3
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+import network
+from models import ChatService, Model
+
+
+MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
+
+
+def _readonly_item(text: str) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+    return item
+
+
+class ModelEditDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        model: Model | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.model = model
+        self.setWindowTitle("Редактировать модель" if model else "Добавить модель")
+        self.setMinimumWidth(480)
+
+        layout = QFormLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("gpt-4o-mini или openai/gpt-4o-mini")
+        layout.addRow("Имя модели:", self.name_edit)
+
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("https://api.openai.com/v1/chat/completions")
+        layout.addRow("API URL:", self.url_edit)
+
+        self.api_id_edit = QLineEdit()
+        self.api_id_edit.setPlaceholderText("OPENAI_API_KEY")
+        layout.addRow("Переменная .env:", self.api_id_edit)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(MODEL_TYPES)
+        self.type_combo.currentTextChanged.connect(self.on_type_changed)
+        layout.addRow("Тип API:", self.type_combo)
+
+        self.active_check = QCheckBox("Активна")
+        self.active_check.setChecked(True)
+        layout.addRow("", self.active_check)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        if model:
+            self.name_edit.setText(model.name)
+            self.url_edit.setText(model.api_url)
+            self.api_id_edit.setText(model.api_id)
+            index = self.type_combo.findText(model.model_type)
+            if index >= 0:
+                self.type_combo.setCurrentIndex(index)
+            self.active_check.setChecked(model.is_active)
+        else:
+            self.on_type_changed(self.type_combo.currentText())
+
+    def on_type_changed(self, model_type: str) -> None:
+        if model_type != "openrouter":
+            return
+        if not self.url_edit.text().strip() or "openrouter.ai" in self.url_edit.text():
+            self.url_edit.setText(network.OPENROUTER_API_URL)
+        if not self.api_id_edit.text().strip() or self.api_id_edit.text() == "OPENAI_API_KEY":
+            self.api_id_edit.setText(network.OPENROUTER_API_KEY_ENV)
+        if not self.name_edit.text().strip():
+            self.name_edit.setPlaceholderText("openai/gpt-4o-mini")
+
+    def get_data(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip(),
+            "api_url": self.url_edit.text().strip(),
+            "api_id": self.api_id_edit.text().strip(),
+            "model_type": self.type_combo.currentText(),
+            "is_active": self.active_check.isChecked(),
+        }
+
+    def accept(self) -> None:
+        data = self.get_data()
+        if not data["name"] or not data["api_url"] or not data["api_id"]:
+            QMessageBox.warning(self, "ChatList", "Заполните все обязательные поля.")
+            return
+        super().accept()
+
+
+class OpenRouterFetchWorker(QThread):
+    finished = pyqtSignal(list)
+    failed = pyqtSignal(str)
+
+    def __init__(self, timeout: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.timeout = timeout
+
+    def run(self) -> None:
+        try:
+            models = network.fetch_openrouter_models(timeout=self.timeout)
+            self.finished.emit(models)
+        except network.NetworkError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"Ошибка: {exc}")
+
+
+class OpenRouterImportDialog(QDialog):
+    def __init__(self, service: ChatService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.service = service
+        self.worker: OpenRouterFetchWorker | None = None
+        self._all_models: list[dict[str, str]] = []
+
+        self.setWindowTitle("Импорт моделей OpenRouter")
+        self.setMinimumSize(720, 520)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "Каталог моделей загружается с openrouter.ai. "
+                f"Укажите {network.OPENROUTER_API_KEY_ENV} в файле .env.",
+            ),
+        )
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("openai, claude, llama...")
+        self.search_edit.textChanged.connect(self.apply_filter)
+        search_row.addWidget(self.search_edit)
+        layout.addLayout(search_row)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.models_list = QListWidget()
+        self.models_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.models_list)
+
+        select_row = QHBoxLayout()
+        select_all_btn = QPushButton("Выбрать все")
+        select_all_btn.clicked.connect(self.select_all)
+        select_row.addWidget(select_all_btn)
+
+        clear_btn = QPushButton("Снять выбор")
+        clear_btn.clicked.connect(self.clear_selection)
+        select_row.addWidget(clear_btn)
+
+        reload_btn = QPushButton("Обновить каталог")
+        reload_btn.clicked.connect(self.load_catalog)
+        select_row.addWidget(reload_btn)
+        select_row.addStretch()
+        layout.addLayout(select_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Импортировать")
+        buttons.accepted.connect(self.on_import)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.load_catalog()
+
+    def load_catalog(self) -> None:
+        self.progress.setVisible(True)
+        self.models_list.clear()
+        self.models_list.addItem("Загрузка каталога OpenRouter...")
+        self.worker = OpenRouterFetchWorker(self.service.get_request_timeout(), self)
+        self.worker.finished.connect(self.on_catalog_loaded)
+        self.worker.failed.connect(self.on_catalog_failed)
+        self.worker.start()
+
+    def on_catalog_loaded(self, models: list) -> None:
+        self.progress.setVisible(False)
+        self._all_models = models
+        self.apply_filter()
+
+    def on_catalog_failed(self, message: str) -> None:
+        self.progress.setVisible(False)
+        self.models_list.clear()
+        self.models_list.addItem(f"Ошибка: {message}")
+        QMessageBox.warning(self, "ChatList", message)
+
+    def apply_filter(self) -> None:
+        query = self.search_edit.text().strip().lower()
+        self.models_list.clear()
+        for item in self._all_models:
+            haystack = f"{item['id']} {item['name']} {item.get('description', '')}".lower()
+            if query and query not in haystack:
+                continue
+            label = item["id"]
+            if item.get("name") and item["name"] != item["id"]:
+                label = f"{item['id']} — {item['name']}"
+            list_item = QListWidgetItem(label)
+            list_item.setFlags(
+                list_item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsEnabled,
+            )
+            list_item.setCheckState(Qt.CheckState.Unchecked)
+            list_item.setData(Qt.ItemDataRole.UserRole, item["id"])
+            self.models_list.addItem(list_item)
+
+    def select_all(self) -> None:
+        for index in range(self.models_list.count()):
+            item = self.models_list.item(index)
+            if item and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(Qt.CheckState.Checked)
+
+    def clear_selection(self) -> None:
+        for index in range(self.models_list.count()):
+            item = self.models_list.item(index)
+            if item and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def on_import(self) -> None:
+        selected_ids: list[str] = []
+        for index in range(self.models_list.count()):
+            item = self.models_list.item(index)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                model_id = item.data(Qt.ItemDataRole.UserRole)
+                if model_id:
+                    selected_ids.append(str(model_id))
+
+        if not selected_ids:
+            QMessageBox.information(self, "ChatList", "Выберите хотя бы одну модель.")
+            return
+
+        imported = 0
+        skipped = 0
+        for model_id in selected_ids:
+            try:
+                self.service.create_model(
+                    model_id,
+                    network.OPENROUTER_API_URL,
+                    network.OPENROUTER_API_KEY_ENV,
+                    is_active=False,
+                    model_type="openrouter",
+                )
+                imported += 1
+            except sqlite3.IntegrityError:
+                skipped += 1
+
+        QMessageBox.information(
+            self,
+            "ChatList",
+            f"Импортировано: {imported}\nПропущено (уже есть): {skipped}",
+        )
+        self.accept()
+
+
+class ModelsDialog(QDialog):
+    def __init__(self, service: ChatService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.service = service
+        self.setWindowTitle("Модели")
+        self.setMinimumSize(820, 420)
+
+        layout = QVBoxLayout(self)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["ID", "Имя", "API URL", "Переменная .env", "Тип", "Активна"],
+        )
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.table)
+
+        buttons = QHBoxLayout()
+        add_btn = QPushButton("Добавить")
+        add_btn.clicked.connect(self.on_add)
+        buttons.addWidget(add_btn)
+
+        openrouter_btn = QPushButton("Из OpenRouter...")
+        openrouter_btn.clicked.connect(self.on_import_openrouter)
+        buttons.addWidget(openrouter_btn)
+
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self.on_edit)
+        buttons.addWidget(edit_btn)
+
+        toggle_btn = QPushButton("Вкл/Выкл")
+        toggle_btn.clicked.connect(self.on_toggle)
+        buttons.addWidget(toggle_btn)
+
+        delete_btn = QPushButton("Удалить")
+        delete_btn.clicked.connect(self.on_delete)
+        buttons.addWidget(delete_btn)
+
+        refresh_btn = QPushButton("Обновить")
+        refresh_btn.clicked.connect(self.refresh)
+        buttons.addWidget(refresh_btn)
+
+        buttons.addStretch()
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+        self.refresh()
+
+    def on_import_openrouter(self) -> None:
+        dialog = OpenRouterImportDialog(self.service, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+
+    def refresh(self) -> None:
+        self.table.setRowCount(0)
+        for row_index, model in enumerate(self.service.load_all_models()):
+            self.table.insertRow(row_index)
+            self.table.setItem(row_index, 0, _readonly_item(str(model.id)))
+            self.table.setItem(row_index, 1, _readonly_item(model.name))
+            self.table.setItem(row_index, 2, _readonly_item(model.api_url))
+            self.table.setItem(row_index, 3, _readonly_item(model.api_id))
+            self.table.setItem(row_index, 4, _readonly_item(model.model_type))
+            self.table.setItem(row_index, 5, _readonly_item("Да" if model.is_active else "Нет"))
+            self.table.item(row_index, 0).setData(Qt.ItemDataRole.UserRole, model.id)
+
+    def _selected_model_id(self) -> int | None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        item = self.table.item(rows[0].row(), 0)
+        return int(item.data(Qt.ItemDataRole.UserRole)) if item else None
+
+    def on_add(self) -> None:
+        dialog = ModelEditDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        try:
+            self.service.create_model(
+                data["name"],
+                data["api_url"],
+                data["api_id"],
+                is_active=data["is_active"],
+                model_type=data["model_type"],
+            )
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(self, "ChatList", "Модель с таким именем уже существует.")
+            return
+        self.refresh()
+
+    def on_edit(self) -> None:
+        model_id = self._selected_model_id()
+        if model_id is None:
+            QMessageBox.information(self, "ChatList", "Выберите модель в таблице.")
+            return
+        model = self.service.get_model(model_id)
+        if model is None:
+            return
+        dialog = ModelEditDialog(self, model)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dialog.get_data()
+        try:
+            self.service.update_model(model_id, **data)
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(self, "ChatList", "Модель с таким именем уже существует.")
+            return
+        self.refresh()
+
+    def on_toggle(self) -> None:
+        model_id = self._selected_model_id()
+        if model_id is None:
+            QMessageBox.information(self, "ChatList", "Выберите модель в таблице.")
+            return
+        try:
+            self.service.toggle_model_active(model_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "ChatList", str(exc))
+            return
+        self.refresh()
+
+    def on_delete(self) -> None:
+        model_id = self._selected_model_id()
+        if model_id is None:
+            QMessageBox.information(self, "ChatList", "Выберите модель в таблице.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "ChatList",
+            "Удалить выбранную модель?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.service.delete_model(model_id)
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(
+                self,
+                "ChatList",
+                "Нельзя удалить модель: есть сохранённые результаты.",
+            )
+            return
+        self.refresh()
+
+
+class SettingsDialog(QDialog):
+    def __init__(self, service: ChatService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.service = service
+        self.setWindowTitle("Настройки")
+        self.setMinimumWidth(420)
+
+        layout = QFormLayout(self)
+        settings = self.service.get_settings()
+
+        self.timeout_edit = QLineEdit(settings.get("request_timeout", "30"))
+        layout.addRow("Таймаут запроса (с):", self.timeout_edit)
+
+        self.tokens_edit = QLineEdit(settings.get("max_tokens", "2048"))
+        layout.addRow("Макс. токенов:", self.tokens_edit)
+
+        self.db_path_edit = QLineEdit(settings.get("db_path", "chatlist.db"))
+        layout.addRow("Путь к БД:", self.db_path_edit)
+
+        layout.addRow(
+            QLabel("Изменение пути к БД вступит в силу после перезапуска программы."),
+        )
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Сохранить")
+        buttons.accepted.connect(self.on_save)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def on_save(self) -> None:
+        timeout = self.timeout_edit.text().strip()
+        tokens = self.tokens_edit.text().strip()
+        db_path = self.db_path_edit.text().strip()
+
+        try:
+            if float(timeout) <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "ChatList", "Таймаут должен быть положительным числом.")
+            return
+
+        try:
+            if int(tokens) <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "ChatList", "Макс. токенов должно быть положительным целым.")
+            return
+
+        if not db_path:
+            QMessageBox.warning(self, "ChatList", "Укажите путь к файлу базы данных.")
+            return
+
+        self.service.save_settings(
+            {
+                "request_timeout": timeout,
+                "max_tokens": tokens,
+                "db_path": db_path,
+            },
+        )
+        self.accept()
+
+
+class HistoryDialog(QDialog):
+    def __init__(self, service: ChatService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.service = service
+        self.setWindowTitle("История")
+        self.setMinimumSize(960, 560)
+
+        layout = QVBoxLayout(self)
+
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Поиск:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Текст промта, модель или ответ...")
+        self.search_edit.returnPressed.connect(self.refresh_results)
+        search_row.addWidget(self.search_edit)
+        search_btn = QPushButton("Найти")
+        search_btn.clicked.connect(self.refresh_results)
+        search_row.addWidget(search_btn)
+        layout.addLayout(search_row)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        prompts_widget = QWidget()
+        prompts_layout = QVBoxLayout(prompts_widget)
+        prompts_layout.addWidget(QLabel("Промты:"))
+        self.prompts_table = QTableWidget(0, 4)
+        self.prompts_table.setHorizontalHeaderLabels(["ID", "Дата", "Промт", "Теги"])
+        self.prompts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.prompts_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.prompts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.prompts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.prompts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.prompts_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.prompts_table.itemSelectionChanged.connect(self.on_prompt_selected)
+        prompts_layout.addWidget(self.prompts_table)
+
+        delete_prompt_btn = QPushButton("Удалить промт")
+        delete_prompt_btn.clicked.connect(self.on_delete_prompt)
+        prompts_layout.addWidget(delete_prompt_btn)
+        splitter.addWidget(prompts_widget)
+
+        results_widget = QWidget()
+        results_layout = QVBoxLayout(results_widget)
+        results_layout.addWidget(QLabel("Результаты:"))
+        self.results_table = QTableWidget(0, 4)
+        self.results_table.setHorizontalHeaderLabels(["Дата", "Модель", "Промт", "Ответ"])
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.results_table.setWordWrap(True)
+        results_layout.addWidget(self.results_table)
+        splitter.addWidget(results_widget)
+
+        splitter.setSizes([360, 600])
+        layout.addWidget(splitter)
+
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        self._selected_prompt_id: int | None = None
+        self.refresh_prompts()
+        self.refresh_results()
+
+    def refresh_prompts(self) -> None:
+        self.prompts_table.setRowCount(0)
+        for row_index, prompt in enumerate(self.service.load_prompts()):
+            self.prompts_table.insertRow(row_index)
+            preview = prompt.text.replace("\n", " ")
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            self.prompts_table.setItem(row_index, 0, _readonly_item(str(prompt.id)))
+            self.prompts_table.setItem(row_index, 1, _readonly_item(prompt.created_at))
+            self.prompts_table.setItem(row_index, 2, _readonly_item(preview))
+            self.prompts_table.setItem(row_index, 3, _readonly_item(prompt.tags))
+            self.prompts_table.item(row_index, 0).setData(Qt.ItemDataRole.UserRole, prompt.id)
+
+    def on_prompt_selected(self) -> None:
+        rows = self.prompts_table.selectionModel().selectedRows()
+        if not rows:
+            self._selected_prompt_id = None
+        else:
+            item = self.prompts_table.item(rows[0].row(), 0)
+            self._selected_prompt_id = int(item.data(Qt.ItemDataRole.UserRole)) if item else None
+        self.refresh_results()
+
+    def refresh_results(self) -> None:
+        search = self.search_edit.text().strip()
+        results = self.service.load_history_results(self._selected_prompt_id, search)
+        self.results_table.setRowCount(0)
+        for row_index, item in enumerate(results):
+            self.results_table.insertRow(row_index)
+            prompt_preview = item.prompt_text.replace("\n", " ")
+            if len(prompt_preview) > 80:
+                prompt_preview = prompt_preview[:77] + "..."
+            self.results_table.setItem(row_index, 0, _readonly_item(item.created_at))
+            self.results_table.setItem(row_index, 1, _readonly_item(item.model_name))
+            self.results_table.setItem(row_index, 2, _readonly_item(prompt_preview))
+            self.results_table.setItem(row_index, 3, _readonly_item(item.response))
+        self.results_table.resizeRowsToContents()
+
+    def on_delete_prompt(self) -> None:
+        rows = self.prompts_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "ChatList", "Выберите промт для удаления.")
+            return
+        item = self.prompts_table.item(rows[0].row(), 0)
+        if item is None:
+            return
+        prompt_id = int(item.data(Qt.ItemDataRole.UserRole))
+        answer = QMessageBox.question(
+            self,
+            "ChatList",
+            "Удалить промт и все связанные результаты?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.service.delete_prompt(prompt_id)
+        self._selected_prompt_id = None
+        self.refresh_prompts()
+        self.refresh_results()

@@ -3,17 +3,16 @@ import sys
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -62,6 +61,58 @@ class FetchWorker(QThread):
             self.finished.emit(payload)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+RESULT_ROW_HEIGHT = 150
+
+
+class ResultRowWidget(QFrame):
+    def __init__(
+        self,
+        index: int,
+        model_name: str,
+        response: str,
+        selected: bool,
+        on_toggle,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.index = index
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        model_box = QVBoxLayout()
+        model_box.addWidget(QLabel("Модель"))
+        model_label = QLabel(model_name)
+        model_label.setWordWrap(True)
+        model_label.setMinimumWidth(180)
+        model_label.setMaximumWidth(220)
+        model_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        model_box.addWidget(model_label)
+        model_box.addStretch()
+        layout.addLayout(model_box)
+
+        response_box = QVBoxLayout()
+        response_box.addWidget(QLabel("Ответ"))
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText(response)
+        editor.setFixedHeight(RESULT_ROW_HEIGHT)
+        editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        response_box.addWidget(editor)
+        layout.addLayout(response_box, 1)
+
+        select_box = QVBoxLayout()
+        select_box.addWidget(QLabel("Выбрать"))
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(selected)
+        self.checkbox.toggled.connect(lambda checked: on_toggle(index, checked))
+        select_box.addWidget(self.checkbox, alignment=Qt.AlignmentFlag.AlignHCenter)
+        select_box.addStretch()
+        select_box.setContentsMargins(8, 0, 8, 0)
+        layout.addLayout(select_box)
 
 
 class MainWindow(QMainWindow):
@@ -117,22 +168,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_label)
 
         layout.addWidget(QLabel("Результаты:"))
-        self.results_table = QTableWidget(0, 3)
-        self.results_table.setHorizontalHeaderLabels(["Модель", "Ответ", "Выбрать"])
-        header = self.results_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        header.setMinimumSectionSize(80)
-        self.results_table.setColumnWidth(0, 220)
-        self.results_table.setColumnWidth(2, 90)
-        self.results_table.verticalHeader().setVisible(True)
-        self.results_table.verticalHeader().setDefaultSectionSize(120)
-        self.results_table.setWordWrap(True)
-        self.results_table.setAlternatingRowColors(True)
-        self.results_table.itemChanged.connect(self.on_result_item_changed)
-        header.sectionResized.connect(self._update_response_heights)
-        layout.addWidget(self.results_table, 1)
+
+        self.results_scroll = QScrollArea()
+        self.results_scroll.setWidgetResizable(True)
+        self.results_scroll.setFrameShape(QFrame.Shape.StyledPanel)
+        self.results_container = QWidget()
+        self.results_layout = QVBoxLayout(self.results_container)
+        self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.results_layout.setSpacing(8)
+        self.results_scroll.setWidget(self.results_container)
+        layout.addWidget(self.results_scroll, 1)
 
         self.refresh_prompts()
 
@@ -208,7 +253,7 @@ class MainWindow(QMainWindow):
             return
 
         self.service.clear_temp_results()
-        self.populate_results_table()
+        self.populate_results()
         self.set_loading(True, "Отправка запросов...")
 
         self.worker = FetchWorker(self.service, prompt_text, self)
@@ -219,7 +264,7 @@ class MainWindow(QMainWindow):
     def on_fetch_finished(self, results: list) -> None:
         temp_results = [TempResult(**item) for item in results]
         self.service.set_temp_results(temp_results)
-        self.populate_results_table()
+        self.populate_results()
         self.set_loading(False, f"Получено ответов: {len(temp_results)}")
         self.save_button.setEnabled(bool(temp_results))
 
@@ -227,78 +272,36 @@ class MainWindow(QMainWindow):
         self.set_loading(False, message)
         QMessageBox.warning(self, "ChatList", message)
 
-    def _make_response_editor(self, model_name: str, response: str) -> QTextEdit:
-        editor = QTextEdit()
-        editor.setReadOnly(True)
-        editor.setFrameShape(QFrame.Shape.NoFrame)
-        editor.setPlainText(f"【{model_name}】\n\n{response}")
-        editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        editor.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        return editor
+    def on_result_toggled(self, index: int, selected: bool) -> None:
+        self.service.set_selected(index, selected)
 
-    def _response_editor_height(self, editor: QTextEdit) -> int:
-        column_width = self.results_table.columnWidth(1)
-        if column_width < 80:
-            column_width = (
-                self.results_table.viewport().width()
-                - self.results_table.columnWidth(0)
-                - self.results_table.columnWidth(2)
-                - 30
-            )
-        doc = editor.document()
-        doc.setTextWidth(max(column_width - 16, 120))
-        height = int(doc.size().height()) + 20
-        return max(height, 80)
+    def _clear_results_layout(self) -> None:
+        while self.results_layout.count():
+            item = self.results_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-    def _update_response_heights(self, *_args) -> None:
-        for row in range(self.results_table.rowCount()):
-            editor = self.results_table.cellWidget(row, 1)
-            if isinstance(editor, QTextEdit):
-                self.results_table.setRowHeight(row, self._response_editor_height(editor))
-
-    def populate_results_table(self) -> None:
-        self.results_table.blockSignals(True)
-        self.results_table.setRowCount(0)
-        for index, item in enumerate(self.service.temp_results):
-            self.results_table.insertRow(index)
-
-            name_item = QTableWidgetItem(item.model_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            name_item.setTextAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-            self.results_table.setItem(index, 0, name_item)
-
-            response_editor = self._make_response_editor(item.model_name, item.response)
-            self.results_table.setCellWidget(index, 1, response_editor)
-
-            check_item = QTableWidgetItem()
-            check_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled,
-            )
-            check_item.setCheckState(
-                Qt.CheckState.Checked if item.selected else Qt.CheckState.Unchecked,
-            )
-            check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.results_table.setItem(index, 2, check_item)
-
-            self.results_table.setRowHeight(index, self._response_editor_height(response_editor))
-
-        self.results_table.blockSignals(False)
-
-    def on_result_item_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() != 2:
+    def populate_results(self) -> None:
+        self._clear_results_layout()
+        if not self.service.temp_results:
+            placeholder = QLabel("Нет результатов")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.results_layout.addWidget(placeholder)
             return
-        row = item.row()
-        selected = item.checkState() == Qt.CheckState.Checked
-        self.service.set_selected(row, selected)
+
+        for index, item in enumerate(self.service.temp_results):
+            row = ResultRowWidget(
+                index,
+                item.model_name,
+                item.response,
+                item.selected,
+                self.on_result_toggled,
+                self.results_container,
+            )
+            self.results_layout.addWidget(row)
 
     def on_save(self) -> None:
-        for row in range(self.results_table.rowCount()):
-            check_item = self.results_table.item(row, 2)
-            if check_item is not None:
-                selected = check_item.checkState() == Qt.CheckState.Checked
-                self.service.set_selected(row, selected)
-
         try:
             saved_count = self.service.save_selected_results()
         except ValueError as exc:
@@ -309,7 +312,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "ChatList", "Отметьте хотя бы один результат для сохранения.")
             return
 
-        self.populate_results_table()
+        self.populate_results()
         self.save_button.setEnabled(False)
         self.status_label.setText(f"Сохранено результатов: {saved_count}")
         self.refresh_prompts()

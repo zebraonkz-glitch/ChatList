@@ -33,17 +33,30 @@ git push -u origin main
 }
 ```
 
-### 0.3. Включите GitHub Pages
+### 0.3. Включите GitHub Pages (обязательно до первого деплоя)
 
-1. GitHub → репозиторий → **Settings** → **Pages**
-2. **Build and deployment** → Source: **GitHub Actions**
-3. После первого push в `main` workflow `.github/workflows/pages.yml` опубликует сайт
+Без этого шага workflow **Deploy GitHub Pages** падает с ошибкой:
+
+```text
+Get Pages site failed ... Not Found
+```
+
+**Что сделать:**
+
+1. Откройте репозиторий на GitHub.
+2. **Settings** → **Pages** (в левом меню).
+3. В блоке **Build and deployment** → **Source** выберите **GitHub Actions**.
+   - Не выбирайте «Deploy from a branch» — для нашего workflow нужен именно **GitHub Actions**.
+4. Если раздел Pages пустой — после выбора источника GitHub создаст сайт автоматически.
+5. Запустите деплой вручную: **Actions** → **Deploy GitHub Pages** → **Run workflow**.
 
 Сайт будет доступен по адресу:
 
 ```text
 https://YOUR_USERNAME.github.io/ChatList/
 ```
+
+> **Примечание:** автоматическое включение через `enablement: true` в workflow требует Personal Access Token с правами `repo` / Pages — проще один раз включить Pages в настройках вручную.
 
 ---
 
@@ -191,7 +204,7 @@ Get-FileHash .\ChatList-1.0.0-setup.exe -Algorithm SHA256
 
 | Проблема | Решение |
 |----------|---------|
-| Pages не обновляется | Проверьте Actions → Deploy GitHub Pages; в Settings → Pages выбран source **GitHub Actions** |
+| Pages не обновляется / `Get Pages site failed` / `Not Found` | **Settings → Pages → Source: GitHub Actions** (см. раздел 0.3). Затем **Actions → Deploy GitHub Pages → Run workflow** |
 | Кнопка «Скачать» не находит exe | Убедитесь, что в Release есть файл `*-setup.exe` |
 | Workflow release падает | Нужен тег формата `v1.0.0`; версия в теге = `version.py` |
 | CORS / API на лендинге | GitHub API для публичных репозиториев работает без токена; для приватных — настройте публичный Release или укажите ссылку вручную в `site.json` |

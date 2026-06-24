@@ -8,6 +8,8 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
+# Pages must be enabled once in repo Settings -> Pages -> Source: GitHub Actions
+
 permissions:
   contents: read
   pages: write

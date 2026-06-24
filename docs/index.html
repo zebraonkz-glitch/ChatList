@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ChatList — отправка одного промта в несколько нейросетей и сравнение ответов.">
+  <title>ChatList</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #0e1224;
+      --bg-card: #171d33;
+      --gold: #c9a227;
+      --gold-soft: #e8d48a;
+      --text: #eef1f8;
+      --muted: #9aa3bf;
+      --accent: #2e5c8a;
+      --border: #2a3350;
+      --radius: 14px;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201, 162, 39, 0.18), transparent),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    a { color: var(--gold-soft); }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    header {
+      text-align: center;
+      padding: 48px 0 28px;
+    }
+
+    .logo {
+      width: 88px;
+      height: 88px;
+      margin: 0 auto 18px;
+      filter: drop-shadow(0 8px 24px rgba(201, 162, 39, 0.35));
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(2rem, 5vw, 3rem);
+      letter-spacing: 0.02em;
+    }
+
+    .tagline {
+      color: var(--muted);
+      font-size: 1.1rem;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .version-badge {
+      display: inline-block;
+      margin-top: 16px;
+      padding: 6px 14px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--gold-soft);
+      background: rgba(255, 255, 255, 0.03);
+      font-size: 0.95rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin: 28px 0 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 22px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-weight: 600;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .btn:hover { transform: translateY(-1px); }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #d4af37, #a8841d);
+      color: #1a1408;
+      box-shadow: 0 10px 30px rgba(201, 162, 39, 0.25);
+    }
+
+    .btn-secondary {
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+      margin-top: 36px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 1.15rem;
+      color: var(--gold-soft);
+    }
+
+    ul { margin: 0; padding-left: 18px; color: var(--muted); }
+    li + li { margin-top: 6px; }
+
+    .steps {
+      counter-reset: step;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .steps li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 36px;
+      margin-bottom: 12px;
+      color: var(--muted);
+    }
+
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(201, 162, 39, 0.15);
+      color: var(--gold-soft);
+      font-size: 0.85rem;
+      font-weight: 700;
+      display: grid;
+      place-items: center;
+    }
+
+    footer {
+      margin-top: 48px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    code {
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 0.9em;
+    }
+
+    .note {
+      margin-top: 24px;
+      padding: 14px 16px;
+      border-left: 3px solid var(--gold);
+      background: rgba(201, 162, 39, 0.08);
+      border-radius: 0 10px 10px 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img class="logo" src="assets/favicon.svg" alt="ChatList">
+      <h1 id="app-name">ChatList</h1>
+      <p class="tagline" id="tagline">Один промт — несколько нейросетей — сравнение ответов</p>
+      <div class="version-badge" id="version-badge">Загрузка версии…</div>
+      <div class="actions">
+        <a class="btn btn-primary" id="download-btn" href="#">Скачать для Windows</a>
+        <a class="btn btn-secondary" id="github-btn" href="#" target="_blank" rel="noopener">Исходный код на GitHub</a>
+        <a class="btn btn-secondary" id="docs-btn" href="#" target="_blank" rel="noopener">Документация</a>
+      </div>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Возможности</h2>
+        <ul>
+          <li>Параллельная отправка промта в активные модели</li>
+          <li>Сравнение ответов в одном окне</li>
+          <li>AI-ассистент для улучшения промтов</li>
+          <li>История, экспорт MD/JSON, светлая и тёмная тема</li>
+          <li>OpenAI, DeepSeek, Groq, OpenRouter</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Быстрый старт</h2>
+        <ol class="steps">
+          <li>Скачайте и установите <code>ChatList-*-setup.exe</code></li>
+          <li>Скопируйте <code>.env.example</code> в <code>.env</code> и укажите API-ключи</li>
+          <li>Включите модели в <strong>Приложение → Модели</strong></li>
+          <li>Введите промт и нажмите <strong>Отправить</strong></li>
+        </ol>
+      </section>
+
+      <section class="card">
+        <h2>Для разработчиков</h2>
+        <ul>
+          <li>Python 3.11+, PyQt6, SQLite</li>
+          <li><code>pip install -r requirements.txt</code></li>
+          <li><code>python main.py</code></li>
+          <li>Сборка: <code>.\build.ps1</code></li>
+        </ul>
+      </section>
+    </div>
+
+    <p class="note" id="release-note">
+      Релизы публикуются на GitHub Releases. Проверяйте SHA256-контрольные суммы в файле <code>SHA256SUMS.txt</code>.
+    </p>
+
+    <footer>
+      <p>ChatList · лицензия MIT · сделано для сравнения ответов нейросетей</p>
+    </footer>
+  </div>
+
+  <script>
+    async function initSite() {
+      const config = await fetch("site.json").then((r) => r.json()).catch(() => ({
+        appName: "ChatList",
+        tagline: "Один промт — несколько нейросетей — сравнение ответов",
+        repo: "YOUR_USERNAME/ChatList",
+        docsUrl: "https://github.com/YOUR_USERNAME/ChatList#readme"
+      }));
+
+      const repo = config.repo;
+      const repoUrl = `https://github.com/${repo}`;
+      const releasesUrl = `${repoUrl}/releases/latest`;
+
+      document.getElementById("app-name").textContent = config.appName || "ChatList";
+      document.getElementById("tagline").textContent = config.tagline || "";
+      document.getElementById("github-btn").href = repoUrl;
+      document.getElementById("docs-btn").href = config.docsUrl || `${repoUrl}#readme`;
+      document.getElementById("download-btn").href = releasesUrl;
+
+      try {
+        const release = await fetch(`https://api.github.com/repos/${repo}/releases/latest`).then((r) => {
+          if (!r.ok) throw new Error("no release");
+          return r.json();
+        });
+
+        const version = release.tag_name || "latest";
+        document.getElementById("version-badge").textContent = `Актуальная версия: ${version}`;
+
+        const installer = (release.assets || []).find((asset) =>
+          /-setup\.exe$/i.test(asset.name)
+        );
+        if (installer) {
+          document.getElementById("download-btn").href = installer.browser_download_url;
+          document.getElementById("download-btn").textContent = `Скачать ${installer.name}`;
+        }
+      } catch (_) {
+        document.getElementById("version-badge").textContent = "Смотрите релизы на GitHub";
+      }
+    }
+
+    initSite();
+  </script>
+</body>
+</html>

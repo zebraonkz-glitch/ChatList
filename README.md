@@ -63,7 +63,21 @@ python main.py
 .\build.ps1
 ```
 
-Исполняемый файл: `dist\ChatList.exe`
+Артефакты (версия из `version.py`):
+
+- `dist\ChatList-X.Y.Z.exe` — портативная сборка
+- `dist\ChatList-X.Y.Z-setup.exe` — инсталлятор (Inno Setup)
+
+Подготовка релиза:
+
+```powershell
+.\scripts\prepare_release.ps1
+```
+
+## Публикация
+
+- [Пошаговая инструкция](docs/PUBLISHING.md) — GitHub Release и GitHub Pages
+- Лендинг: `docs/index.html` → `https://YOUR_USERNAME.github.io/ChatList/`
 
 ## Тестирование
 
@@ -97,3 +111,4 @@ python -m unittest discover -s tests -v
 - [PROJECT.md](PROJECT.md) — спецификация
 - [PLAN.md](PLAN.md) — план реализации
 - [DATABASE.md](DATABASE.md) — схема БД
+- [docs/PUBLISHING.md](docs/PUBLISHING.md) — публикация на GitHub Release и Pages

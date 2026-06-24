@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Verify tag matches version.py
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $expected = "v$((python -c 'from version import __version__; print(__version__)').Trim())"
+          if ($tag -ne $expected) {
+            Write-Error "Tag $tag does not match version.py ($expected)"
+            exit 1
+          }
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: .\scripts\prepare_release.ps1 -SkipTests
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (python -c "from version import __version__; print(__version__)").Trim()
+          echo "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Check release notes file
+        id: notes
+        shell: pwsh
+        run: |
+          $path = "docs/release-notes/v${{ steps.version.outputs.value }}.md"
+          if (Test-Path $path) {
+            echo "exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Create GitHub Release (with notes)
+        if: steps.notes.outputs.exists == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ChatList ${{ steps.version.outputs.value }}
+          body_path: docs/release-notes/v${{ steps.version.outputs.value }}.md
+          files: |
+            dist/ChatList-${{ steps.version.outputs.value }}-setup.exe
+            dist/ChatList-${{ steps.version.outputs.value }}.exe
+            dist/SHA256SUMS.txt
+
+      - name: Create GitHub Release (auto notes)
+        if: steps.notes.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ChatList ${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          files: |
+            dist/ChatList-${{ steps.version.outputs.value }}-setup.exe
+            dist/ChatList-${{ steps.version.outputs.value }}.exe
+            dist/SHA256SUMS.txt

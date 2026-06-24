@@ -6,12 +6,12 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
-from dotenv import load_dotenv
 
 from app_log import setup_logging
+from app_paths import env_hint, load_env
 from models import Model, TempResult
 
-load_dotenv()
+load_env()
 logger = setup_logging()
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -27,7 +27,7 @@ class NetworkError(Exception):
 def get_api_key(api_id: str) -> str:
     key = os.getenv(api_id, "").strip()
     if not key:
-        raise NetworkError(f"Ключ «{api_id}» не найден в файле .env")
+        raise NetworkError(f"Ключ «{api_id}» не найден в файле .env. {env_hint(api_id)}")
     return key
 
 

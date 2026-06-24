@@ -1,3 +1,18 @@
+param(
+    [switch]$SkipInstaller
+)
+
+$ErrorActionPreference = "Stop"
+
+$version = (& python -c "from version import __version__; print(__version__)").Trim()
+if (-not $version) {
+    Write-Host "Failed to read __version__ from version.py" -ForegroundColor Red
+    exit 1
+}
+
+$appName = "ChatList"
+$appVersionedName = "${appName}-${version}"
+
 pip install -r requirements.txt pyinstaller
 
 if (-not (Test-Path "app.ico")) {
@@ -9,7 +24,7 @@ if (-not (Test-Path "app.ico")) {
 $buildArgs = @(
     "--onefile",
     "--windowed",
-    "--name", "ChatList",
+    "--name", $appVersionedName,
     "--icon", "app.ico",
     "--add-data", "app.ico;.",
     "--hidden-import", "PyQt6.sip",
@@ -19,10 +34,22 @@ $buildArgs = @(
 
 pyinstaller @buildArgs
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "Сборка завершена: dist\ChatList.exe" -ForegroundColor Green
-} else {
-    Write-Host "Ошибка сборки PyInstaller" -ForegroundColor Red
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "PyInstaller build failed" -ForegroundColor Red
     exit $LASTEXITCODE
+}
+
+$exePath = Join-Path "dist" "$appVersionedName.exe"
+if (-not (Test-Path $exePath)) {
+    Write-Host "Build output not found: $exePath" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ""
+Write-Host "Build complete: $exePath" -ForegroundColor Green
+Write-Host "Version: $version" -ForegroundColor Green
+
+if (-not $SkipInstaller) {
+    & "$PSScriptRoot\build_installer.ps1" -SkipBuild
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

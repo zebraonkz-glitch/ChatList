@@ -6,7 +6,6 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 
 APP_NAME = "ChatList"
-APP_VERSION = "1.0"
 APP_DESCRIPTION = (
     "Приложение для отправки одного промта в несколько нейросетей "
     "и сравнения их ответов."

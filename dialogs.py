@@ -44,7 +44,6 @@ from prompt_assistant import PromptSuggestion
 from ui_theme import (
     APP_DESCRIPTION,
     APP_NAME,
-    APP_VERSION,
     FONT_SIZE_OPTIONS,
     THEME_DARK,
     THEME_LIGHT,
@@ -53,6 +52,7 @@ from ui_theme import (
     parse_font_size,
     parse_theme,
 )
+from version import __version__
 
 
 MODEL_TYPES = ["openai", "deepseek", "groq", "openrouter"]
@@ -824,7 +824,7 @@ class AboutDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        title = QLabel(f"{APP_NAME} {APP_VERSION}")
+        title = QLabel(f"{APP_NAME} {__version__}")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 16pt; font-weight: bold;")
         layout.addWidget(title)

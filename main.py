@@ -37,9 +37,11 @@ from dialogs import (
 from export_utils import export_json, export_markdown
 from models import ChatService, TempResult
 from prompt_assistant import PromptSuggestion
-from ui_theme import apply_appearance
+from ui_theme import APP_NAME, apply_appearance
+from version import __version__
 
 logger = setup_logging()
+logger.info("Запуск %s %s", APP_NAME, __version__)
 
 class FetchWorker(QThread):
     finished = pyqtSignal(list)
@@ -157,7 +159,7 @@ class MainWindow(QMainWindow):
         if icon is not None:
             self.setWindowIcon(icon)
 
-        self.setWindowTitle("ChatList")
+        self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.setMinimumSize(900, 600)
 
         self._create_menu()

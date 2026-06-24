@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from PyQt6.QtGui import QIcon
+
+from app_paths import resource_dir, runtime_dir
 
 ICON_FILENAME = "app.ico"
 
 
 def app_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
-    return Path(__file__).resolve().parent
+    return runtime_dir()
 
 
 def icon_path() -> Path:
-    return app_base_dir() / ICON_FILENAME
+    bundled = resource_dir() / ICON_FILENAME
+    if bundled.is_file():
+        return bundled
+    return runtime_dir() / ICON_FILENAME
 
 
 def load_app_icon() -> QIcon | None:

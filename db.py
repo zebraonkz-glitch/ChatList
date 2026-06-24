@@ -7,7 +7,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator, Iterable
 
-DEFAULT_DB_PATH = Path(__file__).parent / "chatlist.db"
+from app_paths import runtime_dir
+
+DEFAULT_DB_PATH = runtime_dir() / "chatlist.db"
 
 DEFAULT_SETTINGS: dict[str, str] = {
     "request_timeout": "30",

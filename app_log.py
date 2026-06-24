@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-LOG_PATH = Path(__file__).parent / "logs" / "chatlist.log"
+from app_paths import runtime_dir
+
+LOG_PATH = runtime_dir() / "logs" / "chatlist.log"
 
 
 def setup_logging() -> logging.Logger:
